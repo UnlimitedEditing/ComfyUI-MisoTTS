@@ -5,16 +5,34 @@ import urllib.request
 import torch
 import torchaudio.functional as AF
 
-try:
-    from generator import load_miso_8b, Segment
-except ImportError:
-    raise ImportError(
-        "MisoTTS generator not found — ensure "
-        "git+https://github.com/MisoLabsAI/MisoTTS.git is in pip requirements."
-    )
+# Generator is imported lazily (inside functions) so ComfyUI can register
+# the node classes even before MisoTTS finishes installing.
+# Runtime dep: git+https://github.com/MisoLabsAI/MisoTTS.git
 
-# Speaker IDs as trained: 0=friend, 1=teacher, 2=voiceover
 _MODEL_CACHE: dict = {}
+
+
+def _get_generator():
+    """Lazy import of MisoTTS generator — raises clearly if not installed."""
+    try:
+        from generator import load_miso_8b
+        return load_miso_8b
+    except ImportError:
+        raise ImportError(
+            "MisoTTS generator not found. "
+            "Ensure git+https://github.com/MisoLabsAI/MisoTTS.git is in pip requirements."
+        )
+
+
+def _get_segment_class():
+    try:
+        from generator import Segment
+        return Segment
+    except ImportError:
+        raise ImportError(
+            "MisoTTS Segment not found. "
+            "Ensure git+https://github.com/MisoLabsAI/MisoTTS.git is in pip requirements."
+        )
 
 
 class MisoTTSModelLoader:
@@ -33,6 +51,7 @@ class MisoTTSModelLoader:
 
     def load(self, model_repo):
         if model_repo not in _MODEL_CACHE:
+            load_miso_8b = _get_generator()
             os.environ.setdefault("NO_TORCH_COMPILE", "1")
             device = "cuda" if torch.cuda.is_available() else "cpu"
             _MODEL_CACHE[model_repo] = load_miso_8b(
@@ -103,6 +122,7 @@ class MisoTTSGenerate:
     def generate(self, model, text, speaker, max_audio_length_ms, context_audio=None):
         context = []
         if context_audio is not None:
+            Segment = _get_segment_class()
             waveform = context_audio["waveform"]  # [B, C, S]
             src_sr = context_audio["sample_rate"]
             target_sr = model.sample_rate  # 24 000 Hz (Mimi codec)
