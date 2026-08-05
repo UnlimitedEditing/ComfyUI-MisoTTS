@@ -1,4 +1,3 @@
-import io
 import os
 import urllib.request
 
@@ -78,12 +77,33 @@ class LoadAudioFromURL:
     CATEGORY = "MisoTTS"
 
     def load(self, url):
-        import torchaudio
+        import subprocess
+        import tempfile
+
+        import numpy as np
 
         with urllib.request.urlopen(url) as resp:
             data = resp.read()
 
-        waveform, sample_rate = torchaudio.load(io.BytesIO(data))
+        # torchaudio.load() routes through torchcodec's AudioDecoder on recent
+        # torchaudio versions, which is broken on at least some Graydient instances
+        # (`_AudioDecoder() takes no arguments`) -- decode via an ffmpeg subprocess
+        # instead, sidestepping torchcodec entirely. See GRAYDIENT-COMPLETE-REFERENCE.md.
+        sample_rate = 24000
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(url)[1] or ".bin") as tmp:
+            tmp.write(data)
+            tmp.flush()
+            cmd = [
+                "ffmpeg", "-v", "error", "-i", tmp.name,
+                "-f", "s16le", "-acodec", "pcm_s16le",
+                "-ar", str(sample_rate), "-ac", "1", "-",
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode != 0:
+                raise RuntimeError(f"ffmpeg failed to decode audio from {url}: {proc.stderr.decode(errors='replace')}")
+
+        arr = np.frombuffer(proc.stdout, dtype="<i2").astype("float32") / 32768.0
+        waveform = torch.from_numpy(arr.copy()).unsqueeze(0)  # [channels=1, samples]
         # ComfyUI AUDIO type: waveform shape [batch, channels, samples]
         return ({"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate},)
 
