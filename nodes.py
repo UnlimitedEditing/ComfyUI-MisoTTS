@@ -4,6 +4,8 @@ import urllib.request
 import torch
 import torchaudio.functional as AF
 
+import folder_paths
+
 # Generator is imported lazily (inside functions) so ComfyUI can register
 # the node classes even before MisoTTS finishes installing.
 # Runtime dep: git+https://github.com/MisoLabsAI/MisoTTS.git
@@ -82,8 +84,25 @@ class LoadAudioFromURL:
 
         import numpy as np
 
-        with urllib.request.urlopen(url) as resp:
-            data = resp.read()
+        url = url.strip()
+
+        # Graydient's audio-upload field mapping sometimes drops the file into
+        # ComfyUI's local input/ directory and passes back a bare filename, not
+        # a URL — architecturally unpredictable per submission path, confirmed
+        # on the same local_field across different jobs (see KI-007 §2/§7).
+        # urlopen() on a bare filename raises URLError, so treat anything
+        # without an http(s) scheme as a local upload and resolve it through
+        # folder_paths instead of fetching it.
+        is_remote = url.startswith("http://") or url.startswith("https://")
+        if is_remote:
+            with urllib.request.urlopen(url) as resp:
+                data = resp.read()
+        else:
+            local_path = folder_paths.get_annotated_filepath(url)
+            if not os.path.isfile(local_path):
+                raise RuntimeError(f"local audio upload not found: {url}")
+            with open(local_path, "rb") as fh:
+                data = fh.read()
 
         # torchaudio.load() routes through torchcodec's AudioDecoder on recent
         # torchaudio versions, which is broken on at least some Graydient instances
